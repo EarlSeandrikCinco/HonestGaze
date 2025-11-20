@@ -33,6 +33,8 @@ Install them via: pip install -r requirements.txt
 
 import cv2
 import mediapipe as mp
+import tkinter as tk
+from tkinter import messagebox
 
 # Initialize MediaPipe Face Mesh
 mp_face_mesh = mp.solutions.face_mesh
@@ -60,7 +62,8 @@ def get_average_iris_position(landmarks, indices, width, height):
     ys = [landmarks[i].y * height for i in indices]
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
-
+root = tk.Tk()
+root.withdraw() 
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -97,8 +100,10 @@ while True:
             # 4. Determine LEFT–RIGHT
             if horizontal_ratio < 0.35:
                 gaze = "Looking LEFT"
+                messagebox.showwarning("Focus Warning", "Please focus your gaze on the center of the screen!")
             elif horizontal_ratio > 0.65:
                 gaze = "Looking RIGHT"
+                messagebox.showwarning("Focus Warning", "Please focus your gaze on the center of the screen!")
             else:
                 gaze = "Centered horizontally"
 
@@ -107,6 +112,7 @@ while True:
                 gaze += " & UP"
             elif vertical_ratio > 0.65:
                 gaze += " & DOWN"
+                messagebox.showwarning("Focus Warning", "Please focus your gaze on the center of the screen!")
             else:
                 gaze += " & CENTER V"
 
