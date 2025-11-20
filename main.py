@@ -35,6 +35,7 @@ import cv2
 import mediapipe as mp
 import tkinter as tk
 from tkinter import messagebox
+import time
 
 # Initialize MediaPipe Face Mesh
 mp_face_mesh = mp.solutions.face_mesh
@@ -64,6 +65,13 @@ def get_average_iris_position(landmarks, indices, width, height):
 
 root = tk.Tk()
 root.withdraw() 
+
+
+left_right_start = None
+WARNING_DELAY = 2
+last_warning_time = 0
+WARNING_COOLDOWN = 3
+
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -97,24 +105,31 @@ while True:
 
             gaze = ""
 
-            # 4. Determine LEFT–RIGHT
+            # 4. Determine LEFT–RIGHT (3-second sustained look)
+            current_time = time.time()
+            looking_left_or_right = False
+
             if horizontal_ratio < 0.35:
                 gaze = "Looking LEFT"
-                messagebox.showwarning("Focus Warning", "Please focus your gaze on the center of the screen!")
+                looking_left_or_right = True
             elif horizontal_ratio > 0.65:
                 gaze = "Looking RIGHT"
-                messagebox.showwarning("Focus Warning", "Please focus your gaze on the center of the screen!")
+                looking_left_or_right = True
             else:
                 gaze = "Centered horizontally"
+                left_right_start = None
 
-            # 5. Determine UP–DOWN
-            if vertical_ratio < 0.35:
-                gaze += " & UP"
-            elif vertical_ratio > 0.65:
-                gaze += " & DOWN"
-                messagebox.showwarning("Focus Warning", "Please focus your gaze on the center of the screen!")
-            else:
-                gaze += " & CENTER V"
+            if looking_left_or_right:
+                if left_right_start is None:
+                    left_right_start = current_time
+                elif current_time - left_right_start >= WARNING_DELAY:
+                    if current_time - last_warning_time >= WARNING_COOLDOWN:
+                        messagebox.showwarning(
+                            "Focus Warning",
+                            "Please focus your gaze on the center of the screen!"
+                        )
+                        last_warning_time = current_time
+                        left_right_start = None
 
             # Print event output
             print(gaze)
