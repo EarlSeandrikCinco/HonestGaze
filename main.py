@@ -45,229 +45,225 @@ Install them via: pip install -r requirements.txt
 """
 
 import cv2
-import time
+import mediapipe as mp
 import tkinter as tk
 from tkinter import messagebox
-import mediapipe as mp
+import time
+from collections import deque
+import numpy as np
 
-# ==============================
-# Initialize MediaPipe Face Mesh
-# ==============================
+# -----------------------------
+# MediaPipe Face Mesh
+# -----------------------------
 mp_face_mesh = mp.solutions.face_mesh
-
 face_mesh = mp_face_mesh.FaceMesh(
     max_num_faces=1,
-    refine_landmarks=True,   # Enables IRIS tracking
+    refine_landmarks=True,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
 
 cap = cv2.VideoCapture(0)
 
-# ==============================
-# Adjustable thresholds (defaults)
-# ==============================
-LONG_GAZE_THRESHOLD = 3      # Long look-away threshold (seconds)
-BURST_MAX_COUNT = 3          # How many short bursts allowed
-BURST_WINDOW = 20            # Time window for burst counting (seconds)
-WARNING_COOLDOWN = 3         # Cooldown between warnings
-# ==============================
+# -----------------------------
+# Eye landmarks
+# -----------------------------
+RIGHT_IRIS = [468, 469, 470, 471]
+LEFT_IRIS = [473, 474, 475, 476]
 
+RIGHT_EYE_LEFT = 33
+RIGHT_EYE_RIGHT = 133
+RIGHT_EYE_TOP = 159
+RIGHT_EYE_BOTTOM = 145
+
+LEFT_EYE_LEFT = 362
+LEFT_EYE_RIGHT = 263
+LEFT_EYE_TOP = 386
+LEFT_EYE_BOTTOM = 374
+
+# Head pose landmarks (3D reference)
+HEAD_POINTS = {
+    "nose_tip": 1,
+    "chin": 152,
+    "left_eye_corner": 33,
+    "right_eye_corner": 263,
+    "mouth_left": 61,
+    "mouth_right": 291
+}
+
+# 3D model points in mm (approximate)
+MODEL_POINTS = np.array([
+    [0.0, 0.0, 0.0],        # nose tip
+    [0.0, -63.6, -12.5],    # chin
+    [-43.3, 32.7, -26.0],   # left eye corner
+    [43.3, 32.7, -26.0],    # right eye corner
+    [-28.9, -28.9, -24.1],  # mouth left
+    [28.9, -28.9, -24.1]    # mouth right
+], dtype=np.float64)
+
+# -----------------------------
+# Tkinter
+# -----------------------------
 root = tk.Tk()
 root.withdraw()
 
-# ------------------------------------
-# Correct iris and eye landmark indices
-# ------------------------------------
-RIGHT_IRIS = [469, 470, 471, 472]
-
-RIGHT_EYE_LEFT = 263
-RIGHT_EYE_RIGHT = 362
-RIGHT_EYE_TOP = 386
-RIGHT_EYE_BOTTOM = 374
-
-# Tracking variables
-long_gaze_start = None
-burst_timestamps = []
+# -----------------------------
+# Timed gaze tracking
+# -----------------------------
+look_start = None
+WARNING_DELAY = 2 # feels more like 3 seconds when set to 2 instead of 3
 last_warning_time = 0
+WARNING_COOLDOWN = 3
 
-# Calibration storage
-calib_samples = []
-CALIBRATION_FRAMES = 60   # ~1–2 seconds
-calibrated = False
+neutral_queue = deque(maxlen=50)
+neutral_vertical = None
+prev_vertical_ratio = None
+SMOOTH_FACTOR = 0.3
+NEUTRAL_UPDATE_FACTOR = 0.01
 
-center_h = 0.5  # Default values (in case calibration fails)
-center_v = 0.5
-
-
-# ==============================
-# Classification Function
-# ==============================
-def classify_gaze(hor, ver):
-    """
-    Returns LEFT, RIGHT, UP, DOWN, CENTER
-    Uses realistic thresholds after calibration.
-    """
-
-    # Horizontal classification
-    if hor < 0.25:
-        h_dir = "LEFT"
-    elif hor > 0.75:
-        h_dir = "RIGHT"
-    else:
-        h_dir = "CENTER"
-
-    # Vertical classification
-    if ver < 0.30:
-        v_dir = "UP"
-    elif ver > 0.70:
-        v_dir = "DOWN"
-    else:
-        v_dir = "CENTER"
-
-    # Combined
-    if h_dir == "CENTER" and v_dir == "CENTER":
-        return "CENTER"
-    elif h_dir == "CENTER":
-        return v_dir
-    elif v_dir == "CENTER":
-        return h_dir
-    else:
-        return f"{h_dir} & {v_dir}"
-
-
-# ==============================
-# Iris Position Helper
-# ==============================
 def get_average_iris_position(landmarks, indices, width, height):
     xs = [landmarks[i].x * width for i in indices]
     ys = [landmarks[i].y * height for i in indices]
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
+def estimate_head_pose(landmarks, w, h):
+    image_points = np.array([
+        (landmarks[HEAD_POINTS["nose_tip"]].x * w,
+         landmarks[HEAD_POINTS["nose_tip"]].y * h),
+        (landmarks[HEAD_POINTS["chin"]].x * w,
+         landmarks[HEAD_POINTS["chin"]].y * h),
+        (landmarks[HEAD_POINTS["left_eye_corner"]].x * w,
+         landmarks[HEAD_POINTS["left_eye_corner"]].y * h),
+        (landmarks[HEAD_POINTS["right_eye_corner"]].x * w,
+         landmarks[HEAD_POINTS["right_eye_corner"]].y * h),
+        (landmarks[HEAD_POINTS["mouth_left"]].x * w,
+         landmarks[HEAD_POINTS["mouth_left"]].y * h),
+        (landmarks[HEAD_POINTS["mouth_right"]].x * w,
+         landmarks[HEAD_POINTS["mouth_right"]].y * h)
+    ], dtype=np.float64)
 
-# ==============================
-# Main Program
-# ==============================
-def main():
-    global long_gaze_start, burst_timestamps, last_warning_time
-    global calibrated, center_h, center_v
+    focal_length = w
+    center = (w / 2, h / 2)
+    camera_matrix = np.array(
+        [[focal_length, 0, center[0]],
+         [0, focal_length, center[1]],
+         [0, 0, 1]], dtype=np.float64
+    )
+    dist_coeffs = np.zeros((4, 1))  # assuming no lens distortion
+    success, rotation_vector, translation_vector = cv2.solvePnP(
+        MODEL_POINTS, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE
+    )
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Webcam error.")
-            break
+    if not success:
+        return 0.0
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb)
+    rmat, _ = cv2.Rodrigues(rotation_vector)
+    pose_mat = cv2.hconcat([rmat, translation_vector])
+    _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(pose_mat)
+    pitch = euler_angles[0, 0]  # rotation around x-axis
+    return pitch  # in degrees
 
-        h, w, _ = frame.shape
-        current_time = time.time()
-        gaze_direction = "CENTER"  # default
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Webcam error.")
+        break
 
-        if results.multi_face_landmarks:
-            for face_landmarks in results.multi_face_landmarks:
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(rgb)
+    h, w, _ = frame.shape
+    current_time = time.time()
 
-                # ---- Iris Position ----
-                iris_x, iris_y = get_average_iris_position(
-                    face_landmarks.landmark, RIGHT_IRIS, w, h
-                )
+    if results.multi_face_landmarks:
+        for face_landmarks in results.multi_face_landmarks:
 
-                # ---- Eye boundaries ----
-                left_corner = face_landmarks.landmark[RIGHT_EYE_LEFT].x * w
-                right_corner = face_landmarks.landmark[RIGHT_EYE_RIGHT].x * w
+            # --- Iris positions ---
+            rx, ry = get_average_iris_position(face_landmarks.landmark, RIGHT_IRIS, w, h)
+            lx, ly = get_average_iris_position(face_landmarks.landmark, LEFT_IRIS, w, h)
 
-                top_edge = face_landmarks.landmark[RIGHT_EYE_TOP].y * h
-                bottom_edge = face_landmarks.landmark[RIGHT_EYE_BOTTOM].y * h
+            # --- Eye boundaries ---
+            r_top = face_landmarks.landmark[RIGHT_EYE_TOP].y * h
+            r_bottom = face_landmarks.landmark[RIGHT_EYE_BOTTOM].y * h
+            l_top = face_landmarks.landmark[LEFT_EYE_TOP].y * h
+            l_bottom = face_landmarks.landmark[LEFT_EYE_BOTTOM].y * h
 
-                # ---- Ratios ----
-                horizontal_ratio = (iris_x - left_corner) / (right_corner - left_corner)
-                vertical_ratio = (iris_y - top_edge) / (bottom_edge - top_edge)
+            # --- Vertical ratio ---
+            r_vertical_ratio = 1 - (ry - r_top) / (r_bottom - r_top)
+            l_vertical_ratio = 1 - (ly - l_top) / (l_bottom - l_top)
+            vertical_ratio = (r_vertical_ratio + l_vertical_ratio) / 2
 
-                horizontal_ratio = max(0, min(horizontal_ratio, 1))
-                vertical_ratio = max(0, min(vertical_ratio, 1))
+            # --- Smooth ---
+            if prev_vertical_ratio is None:
+                smoothed_vertical = vertical_ratio
+            else:
+                smoothed_vertical = SMOOTH_FACTOR * vertical_ratio + (1 - SMOOTH_FACTOR) * prev_vertical_ratio
+            prev_vertical_ratio = smoothed_vertical
 
-                # ===========================================
-                # AUTO CALIBRATION (first 1–2 seconds)
-                # ===========================================
-                if not calibrated:
-                    calib_samples.append((horizontal_ratio, vertical_ratio))
+            # --- Head pose compensation ---
+            pitch = estimate_head_pose(face_landmarks.landmark, w, h)
+            vertical_ratio_corrected = smoothed_vertical - (pitch / 90.0)  # scale pitch (-90 to 90) to ratio
 
-                    if len(calib_samples) >= CALIBRATION_FRAMES:
-                        center_h = sum(x for x, y in calib_samples) / len(calib_samples)
-                        center_v = sum(y for x, y in calib_samples) / len(calib_samples)
-                        calibrated = True
-                        print("CENTER CALIBRATED:", center_h, center_v)
+            # --- Neutral calibration ---
+            if neutral_vertical is None:
+                neutral_queue.append(vertical_ratio_corrected)
+                if len(neutral_queue) == neutral_queue.maxlen:
+                    neutral_vertical = sum(neutral_queue) / len(neutral_queue)
+                    print("Neutral vertical set to:", neutral_vertical)
+            else:
+                r_left = face_landmarks.landmark[RIGHT_EYE_LEFT].x * w
+                r_right = face_landmarks.landmark[RIGHT_EYE_RIGHT].x * w
+                horizontal_ratio = (rx - r_left) / (r_right - r_left)
+                deviation = vertical_ratio_corrected - neutral_vertical
+                if 0.4 <= horizontal_ratio <= 0.6 and -0.05 <= deviation <= 0.05:
+                    neutral_vertical += (vertical_ratio_corrected - neutral_vertical) * NEUTRAL_UPDATE_FACTOR
 
-                else:
-                    # Convert raw ratios to relative (center = 0.5)
-                    horizontal_relative = horizontal_ratio - center_h
-                    vertical_relative = vertical_ratio - center_v
+            # --- Horizontal ratio ---
+            r_left = face_landmarks.landmark[RIGHT_EYE_LEFT].x * w
+            r_right = face_landmarks.landmark[RIGHT_EYE_RIGHT].x * w
+            horizontal_ratio = (rx - r_left) / (r_right - r_left)
 
-                    # Normalize into 0–1 values for classification
-                    hor = 0.5 + horizontal_relative * 2
-                    ver = 0.5 + vertical_relative * 2
+            # --- Determine gaze ---
+            gaze = "CENTER"
+            looking_away = False
 
-                    hor = max(0, min(hor, 1))
-                    ver = max(0, min(ver, 1))
+            if horizontal_ratio < 0.40:
+                gaze = "LEFT"
+                looking_away = True
+            elif horizontal_ratio > 0.60:
+                gaze = "RIGHT"
+                looking_away = True
+            else:
+                if neutral_vertical is not None:
+                    deviation = vertical_ratio_corrected - neutral_vertical
+                    if deviation < -0.10:
+                        gaze = "UP"
+                        looking_away = True
+                    elif deviation > 0.15:
+                        gaze = "DOWN"
+                        looking_away = True
 
-                    gaze_direction = classify_gaze(hor, ver)
-
-                print("Gaze:", gaze_direction)
-
-                # === Flag if user is not looking at center ===
-                looking_away = gaze_direction != "CENTER"
-
-                # ======================================================
-                # 1. LONG GAZE DETECTION
-                # ======================================================
-                if looking_away:
-                    if long_gaze_start is None:
-                        long_gaze_start = current_time
-                    else:
-                        if current_time - long_gaze_start >= LONG_GAZE_THRESHOLD:
-                            if current_time - last_warning_time >= WARNING_COOLDOWN:
-                                messagebox.showwarning(
-                                    "Long Gaze Warning",
-                                    "You have looked away from the screen for too long."
-                                )
-                                last_warning_time = current_time
-                                long_gaze_start = None
-                else:
-                    long_gaze_start = None
-
-                # ======================================================
-                # 2. BURST GAZE DETECTION
-                # ======================================================
-                if looking_away:
-                    burst_timestamps.append(current_time)
-
-                burst_timestamps = [
-                    t for t in burst_timestamps
-                    if current_time - t <= BURST_WINDOW
-                ]
-
-                if len(burst_timestamps) >= BURST_MAX_COUNT:
+            # --- Timed warning ---
+            if looking_away:
+                if look_start is None:
+                    look_start = current_time
+                elif current_time - look_start >= WARNING_DELAY:
                     if current_time - last_warning_time >= WARNING_COOLDOWN:
                         messagebox.showwarning(
-                            "Burst Gaze Warning",
-                            "You have been looking away repeatedly."
+                            "Long Glance Warning",
+                            "Please focus your gaze on the center of the screen!"
                         )
                         last_warning_time = current_time
-                        burst_timestamps.clear()
+                        look_start = None
+            else:
+                look_start = None
 
-                print("Away:", looking_away, "Bursts:", len(burst_timestamps))
+            print(gaze)	
+            cv2.circle(frame, (int(rx), int(ry)), 3, (0, 255, 0), -1)
+            cv2.circle(frame, (int(lx), int(ly)), 3, (0, 255, 255), -1)
 
-                cv2.circle(frame, (int(iris_x), int(iris_y)), 3, (0, 255, 0), -1)
+    cv2.imshow("Gaze Direction Tracking - Honest Gaze", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
 
-        cv2.imshow("Gaze Direction Tracking - Honest Gaze", frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-
-if __name__ == '__main__':
-    main()
+cap.release()
+cv2.destroyAllWindows()
