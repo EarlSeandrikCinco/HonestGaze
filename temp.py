@@ -149,9 +149,22 @@ def run_calibration(cap, face_mesh, screen_w, screen_h, grid=(3, 3),
     cols, rows = grid
     margin_x = 0.12
     margin_y = 0.12
-    xs = np.linspace(margin_x * screen_w, (1 - margin_x) * screen_w, cols)
-    ys = np.linspace(margin_y * screen_h, (1 - margin_y) * screen_h, rows)
-    targets = [(int(x), int(y)) for y in ys for x in xs]  # row-major: top->bottom, left->right
+    # 5-dot calibration: center top, full middle row, center bottom
+    top_y = int(margin_y * screen_h)
+    middle_y = int(screen_h / 2)
+    bottom_y = int((1 - margin_y) * screen_h)
+    left_x = int(margin_x * screen_w)
+    center_x = int(screen_w / 2)
+    right_x = int((1 - margin_x) * screen_w)
+
+    targets = [
+        (center_x, top_y),           # top center
+        (left_x, middle_y),          # middle left
+        (center_x, middle_y),        # middle center
+        (right_x, middle_y),         # middle right
+        (center_x, bottom_y)         # bottom center
+    ]
+
 
     features = []
     screens = []
