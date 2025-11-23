@@ -55,8 +55,13 @@ from collections import deque
 CALIBRATION_FRAMES = 40
 SMOOTH_FACTOR = 0.25
 WARNING_DELAY = 3          # seconds of continuous looking away
-WARNING_COOLDOWN = 3       # delay between repeated warnings
+WARNING_COOLDOWN = 1       # delay between repeated warnings
 PITCH_TOLERANCE = 10       # degrees tolerance for UP/DOWN detection
+
+# Burst-glance detection
+BURST_WINDOW = 20           # Look for patterns across long window
+BURST_MIN_GLANCES = 3       # 3+ quick glances = suspicious
+BURST_MAX_DURATION = 1.2    # Micro-glance threshold
 
 # Mediapipe setup
 mp_face_mesh = mp.solutions.face_mesh
@@ -137,6 +142,10 @@ def main():
     look_start = None
     last_warning_time = 0
 
+    burst_events = deque()  # store timestamps of micro-glances
+    last_burst_warning = 0  # cooldown for burst warning
+    burst_warning_cooldown = 10
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -153,9 +162,7 @@ def main():
         if results.multi_face_landmarks:
             face_landmarks = results.multi_face_landmarks[0].landmark
 
-            # ==========================
             # Iris positions
-            # ==========================
             rx, ry = get_average_iris_position(face_landmarks, RIGHT_IRIS, w, h)
             lx, ly = get_average_iris_position(face_landmarks, LEFT_IRIS, w, h)
 
@@ -186,9 +193,7 @@ def main():
             # Pitch compensation
             vertical_corrected = smoothed_vertical - (pitch / 45.0)
 
-            # ==================================================
             # CALIBRATION PHASE
-            # ==================================================
             if neutral_vertical is None:
                 neutral_queue.append((vertical_corrected, pitch))
                 status_lines.append(
@@ -251,9 +256,7 @@ def main():
                 if gaze != "CENTER":
                     last_gaze_direction = gaze
 
-                # ===============================================
                 # Long-gaze timer with direction-specific warning
-                # ===============================================
                 if looking_away:
                     if look_start is None:
                         look_start = current_time
@@ -270,8 +273,35 @@ def main():
 
                             last_warning_time = current_time
                             look_start = None
-                else:
+
+                # BURST-GLANCE DETECTOR
+                # Detect a new glance event ONLY when gaze transitions
+                if last_gaze_direction != "CENTER" and gaze == "CENTER":
+                    # A glance ended → measure how long it lasted
+                    glance_duration = current_time - look_start if look_start else None
+
+                    # Count it only if it's short enough to be a micro-glance
+                    if glance_duration is not None and glance_duration <= BURST_MAX_DURATION:
+                        burst_events.append(current_time)
+
+                    # Reset long-gaze timer after a glance ends
                     look_start = None
+
+                # Clean up old burst events
+                while burst_events and current_time - burst_events[0] > BURST_WINDOW:
+                    burst_events.popleft()
+
+                # BURST-GLANCE WARNING
+                if (len(burst_events) >= BURST_MIN_GLANCES and
+                        current_time - last_burst_warning > burst_warning_cooldown):
+                    messagebox.showwarning(
+                        "Suspicious Activity",
+                        "Multiple quick glances detected.\n"
+                        "Please keep your eyes on the screen."
+                    )
+
+                    last_burst_warning = current_time
+                    burst_events.clear()
 
                 # Debug values
                 status_lines.append(
