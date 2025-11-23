@@ -54,14 +54,15 @@ from collections import deque
 # CONSTANTS
 CALIBRATION_FRAMES = 40
 SMOOTH_FACTOR = 0.25
-WARNING_DELAY = 3          # seconds of continuous looking away
-WARNING_COOLDOWN = 1       # delay between repeated warnings
-PITCH_TOLERANCE = 10       # degrees tolerance for UP/DOWN detection
+WARNING_DELAY = 3            # seconds of continuous looking away -> long gaze
+WARNING_COOLDOWN = 1         # cooldown between long-gaze warnings
+PITCH_TOLERANCE = 10         # degrees tolerance for UP/DOWN detection
 
-# Burst-glance detection
-BURST_WINDOW = 20           # Look for patterns across long window
-BURST_MIN_GLANCES = 3       # 3+ quick glances = suspicious
-BURST_MAX_DURATION = 1.2    # Micro-glance threshold
+# Burst-glance detection (short glances definition)
+BURST_WINDOW = 20            # seconds to look back
+BURST_MIN_GLANCES = 3        # how many short glances required
+SHORT_GLANCE_MIN = 0.75      # minimum duration for a short glance (blink-proof)
+BURST_WARNING_COOLDOWN = 5  # seconds between burst warnings
 
 # Mediapipe setup
 mp_face_mesh = mp.solutions.face_mesh
@@ -93,10 +94,7 @@ root = tk.Tk()
 root.withdraw()
 
 
-# ==========================================
 # Utility Functions
-# ==========================================
-
 def get_average_iris_position(landmarks, indices, w, h):
     xs = [landmarks[i].x * w for i in indices]
     ys = [landmarks[i].y * h for i in indices]
@@ -104,18 +102,19 @@ def get_average_iris_position(landmarks, indices, w, h):
 
 
 def estimate_head_pitch(landmarks, w, h):
-    """Returns pitch in degrees. Positive = looking down, negative = looking up."""
-    nose = landmarks[NOSE_TIP]
-    chin = landmarks[CHIN]
-
-    dy = (chin.y - nose.y) * h
-    dx = (chin.x - nose.x) * w
-
-    if dx == 0:
-        dx = 1e-6
-
-    angle = abs((dy / dx))
-    return min(45, max(-45, angle * 30))  # approximate usable scale
+    """Returns a rough pitch estimate in degrees. Positive ≈ looking down."""
+    try:
+        nose = landmarks[NOSE_TIP]
+        chin = landmarks[CHIN]
+        dy = (chin.y - nose.y) * h
+        dx = (chin.x - nose.x) * w
+        if abs(dx) < 1e-6:
+            dx = 1e-6
+        angle = abs(dy / dx)
+        # scale to an approximate degree-like number, clamped
+        return max(-45.0, min(45.0, angle * 30.0))
+    except Exception:
+        return 0.0
 
 
 def draw_overlay(frame, lines):
@@ -142,9 +141,12 @@ def main():
     look_start = None
     last_warning_time = 0
 
-    burst_events = deque()  # store timestamps of micro-glances
-    last_burst_warning = 0  # cooldown for burst warning
-    burst_warning_cooldown = 10
+    # Burst glance tracking
+    burst_events = deque()
+    last_burst_warning = 0
+
+    short_glance_min = SHORT_GLANCE_MIN         # blink-proof short glance definition
+    burst_max_duration = WARNING_DELAY          # must be below long-gaze threshold
 
     while True:
         ret, frame = cap.read()
@@ -182,12 +184,12 @@ def main():
                 smoothed_vertical = vertical_ratio
             else:
                 smoothed_vertical = (
-                    SMOOTH_FACTOR * vertical_ratio
-                    + (1 - SMOOTH_FACTOR) * prev_vertical_ratio
+                    SMOOTH_FACTOR * vertical_ratio +
+                    (1 - SMOOTH_FACTOR) * prev_vertical_ratio
                 )
             prev_vertical_ratio = smoothed_vertical
 
-            # Head pitch
+            # Head pitch estimation
             pitch = estimate_head_pitch(face_landmarks, w, h)
 
             # Pitch compensation
@@ -197,7 +199,8 @@ def main():
             if neutral_vertical is None:
                 neutral_queue.append((vertical_corrected, pitch))
                 status_lines.append(
-                    f"Calibrating... ({len(neutral_queue)}/{CALIBRATION_FRAMES})")
+                    f"Calibrating... ({len(neutral_queue)}/{CALIBRATION_FRAMES})"
+                )
 
                 if len(neutral_queue) >= CALIBRATION_FRAMES:
                     neutral_vertical = sum(v for v, p in neutral_queue) / len(neutral_queue)
@@ -210,9 +213,7 @@ def main():
                 looking_away = False
 
             else:
-                # ==================================================
-                # HORIZONTAL CLASSIFICATION
-                # ==================================================
+                # HORIZONTAL classification
                 r_left = face_landmarks[RIGHT_EYE_LEFT].x * w
                 r_right = face_landmarks[RIGHT_EYE_RIGHT].x * w
                 horizontal_ratio = (rx - r_left) / (r_right - r_left + 1e-6)
@@ -224,7 +225,6 @@ def main():
                 gaze = "CENTER"
                 looking_away = False
 
-                # LEFT / RIGHT always allowed
                 if horizontal_ratio < 0.40:
                     gaze = "LEFT"
                     looking_away = True
@@ -234,9 +234,7 @@ def main():
                     looking_away = True
 
                 else:
-                    # ==================================================
                     # VERTICAL CLASSIFICATION (depends on head stability)
-                    # ==================================================
                     if pitch_diff <= PITCH_TOLERANCE:
                         if deviation < -0.12:
                             gaze = "UP"
@@ -244,13 +242,6 @@ def main():
                         elif deviation > 0.20:
                             gaze = "DOWN"
                             looking_away = True
-                        else:
-                            gaze = "CENTER"
-                            looking_away = False
-                    else:
-                        # disable UP/DOWN if leaning too much
-                        gaze = "CENTER"
-                        looking_away = False
 
                 # Save direction before warning trigger
                 if gaze != "CENTER":
@@ -262,9 +253,7 @@ def main():
                         look_start = current_time
                     elif current_time - look_start >= WARNING_DELAY:
                         if current_time - last_warning_time >= WARNING_COOLDOWN:
-
-                            direction_text = last_gaze_direction if last_gaze_direction else "away"
-
+                            direction_text = last_gaze_direction or "away"
                             messagebox.showwarning(
                                 "Gaze Warning",
                                 f"You looked {direction_text} for too long.\n"
@@ -274,36 +263,32 @@ def main():
                             last_warning_time = current_time
                             look_start = None
 
-                # BURST-GLANCE DETECTOR
-                # Detect a new glance event ONLY when gaze transitions
-                if last_gaze_direction != "CENTER" and gaze == "CENTER":
-                    # A glance ended → measure how long it lasted
-                    glance_duration = current_time - look_start if look_start else None
+                # BURST-GLANCE DETECTION
+                if gaze == "CENTER":
+                    if look_start is not None:
+                        glance_duration = current_time - look_start
 
-                    # Count it only if it's short enough to be a micro-glance
-                    if glance_duration is not None and glance_duration <= BURST_MAX_DURATION:
-                        burst_events.append(current_time)
+                        # must be real glance: blink-proof AND not long gaze
+                        if short_glance_min <= glance_duration < WARNING_DELAY:
+                            burst_events.append(current_time)
 
-                    # Reset long-gaze timer after a glance ends
-                    look_start = None
+                        look_start = None
 
-                # Clean up old burst events
-                while burst_events and current_time - burst_events[0] > BURST_WINDOW:
-                    burst_events.popleft()
+                    # remove old events
+                    while burst_events and current_time - burst_events[0] > BURST_WINDOW:
+                        burst_events.popleft()
 
-                # BURST-GLANCE WARNING
-                if (len(burst_events) >= BURST_MIN_GLANCES and
-                        current_time - last_burst_warning > burst_warning_cooldown):
-                    messagebox.showwarning(
-                        "Suspicious Activity",
-                        "Multiple quick glances detected.\n"
-                        "Please keep your eyes on the screen."
-                    )
+                    # trigger burst warning
+                    if (len(burst_events) >= BURST_MIN_GLANCES and
+                            current_time - last_burst_warning >= BURST_WARNING_COOLDOWN):
+                        messagebox.showwarning(
+                            "Suspicious Activity",
+                            "Multiple quick suspicious glances detected.\n"
+                            "Please keep your eyes on the screen."
+                        )
+                        last_burst_warning = current_time
+                        burst_events.clear()
 
-                    last_burst_warning = current_time
-                    burst_events.clear()
-
-                # Debug values
                 status_lines.append(
                     f"h={horizontal_ratio:.2f} dev={deviation:.2f} pitch={pitch:.1f} diff={pitch_diff:.1f}"
                 )
