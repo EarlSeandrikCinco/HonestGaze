@@ -50,6 +50,7 @@ import time
 import tkinter as tk
 from tkinter import messagebox
 from collections import deque
+import winsound
 
 # CONSTANTS
 CALIBRATION_FRAMES = 40
@@ -124,6 +125,8 @@ def draw_overlay(frame, lines):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         y += 25
 
+def play_warning_sound():
+    winsound.Beep(2000, 1200)
 
 # MAIN PROGRAM
 def main():
@@ -254,6 +257,7 @@ def main():
                     elif current_time - look_start >= WARNING_DELAY:
                         if current_time - last_warning_time >= WARNING_COOLDOWN:
                             direction_text = last_gaze_direction or "away"
+                            play_warning_sound()
                             messagebox.showwarning(
                                 "Gaze Warning",
                                 f"You looked {direction_text} for too long.\n"
@@ -281,6 +285,7 @@ def main():
                     # trigger burst warning
                     if (len(burst_events) >= BURST_MIN_GLANCES and
                             current_time - last_burst_warning >= BURST_WARNING_COOLDOWN):
+                        play_warning_sound()
                         messagebox.showwarning(
                             "Suspicious Activity",
                             "Multiple quick suspicious glances detected.\n"
